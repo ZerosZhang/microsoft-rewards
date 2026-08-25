@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Diagnostics;
+using System.IO;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Edge;
 using RewardAutoMate.Configuration;
@@ -35,7 +36,25 @@ public static class EdgeDriverFactory
                 ActiveDriver = null;
             }
 
-            // ! 确保驱动版本与本机 Edge 匹配（自动同步）
+            try
+            {
+                return CreateDriverInternal(_is_mobile, _reuse_data_dir);
+            }
+            catch (Exception ex) when (IsEdgeCrash(ex))
+            {
+                AppLogger.Warning($"Edge 启动失败，疑似残留进程占用用户目录，清理后重试: {ex.Message}");
+                KillResidualEdgeProcesses();
+                return CreateDriverInternal(_is_mobile, _reuse_data_dir);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 创建 EdgeDriver 实例（含版本同步、反检测参数、脚本注入）
+    /// </summary>
+    private static EdgeDriver CreateDriverInternal(bool _is_mobile, bool _reuse_data_dir)
+    {
+        // ! 确保驱动版本与本机 Edge 匹配（自动同步）
             string _driver_path = WebDriverUpdater.EnsureDriverUpToDate();
             string _driver_dir = Path.GetDirectoryName(_driver_path) ?? AppContext.BaseDirectory;
 
@@ -68,10 +87,6 @@ public static class EdgeDriverFactory
             _options.AddArgument("--disable-infobars");
             _options.AddArgument("--disable-extensions");
             _options.AddArgument("--disable-popup-blocking");
-
-            // - 禁用同源策略限制
-            _options.AddArgument("--disable-web-security");
-            _options.AddArgument("--disable-features=IsolateOrigins,site-per-process");
 
             // ? 随机窗口尺寸（桌面端）
             string _ua;
@@ -132,6 +147,40 @@ public static class EdgeDriverFactory
                 AppLogger.Error("EdgeDriver 创建失败", ex);
                 throw;
             }
+    }
+
+    /// <summary>
+    /// 判断是否为 Edge 启动崩溃（残留进程占用用户目录的典型表现）
+    /// </summary>
+    private static bool IsEdgeCrash(Exception _ex)
+    {
+        string _msg = _ex.Message;
+        return _msg.Contains("crashed")
+            || _msg.Contains("DevToolsActivePort")
+            || _msg.Contains("SessionNotCreated");
+    }
+
+    /// <summary>
+    /// 清理残留的 msedge / msedgedriver 进程（可能占用 --user-data-dir 导致新实例启动崩溃）
+    /// </summary>
+    private static void KillResidualEdgeProcesses()
+    {
+        try
+        {
+            foreach (Process _process in Process.GetProcessesByName("msedge"))
+            {
+                try { _process.Kill(); } catch { /* 忽略 */ }
+            }
+            foreach (Process _process in Process.GetProcessesByName("msedgedriver"))
+            {
+                try { _process.Kill(); } catch { /* 忽略 */ }
+            }
+            Thread.Sleep(1500);
+            AppLogger.Info("已清理残留 msedge/msedgedriver 进程");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warning($"清理残留 Edge 进程失败: {ex.Message}");
         }
     }
 

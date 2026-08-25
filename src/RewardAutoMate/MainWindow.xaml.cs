@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics.CodeAnalysis;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -28,6 +29,10 @@ public partial class MainWindow : Window
     private readonly Timer MainTimer;
     private readonly Timer WeeklyReportTimer;
     private DateTime NextExecuteTime = DateTime.Now;
+    private bool IsExecuting = false;
+
+    // ! 串行化所有浏览器操作（启动刷新 / 主流程），避免并发创建 EdgeDriver 会话互相 Quit
+    private static readonly SemaphoreSlim BrowserLock = new SemaphoreSlim(1, 1);
 
     // ! 今日统计
     private TodayStats TodayStats = new TodayStats();
@@ -79,7 +84,7 @@ public partial class MainWindow : Window
         TextBlock_CurrentPoints.Text = "读取中...";
         TextBlock_Level.Text = "读取中...";
 
-        // ! 启动时尝试读取 Dashboard 状态（后台）
+        // ! 启动时尝试读取 Dashboard 状态（后台；与主流程用信号量串行，避免并发浏览器会话）
         _ = Task.Run(async () => await RefreshDashboardStatsAsync());
 
         // ! 启动定时器（首次执行延迟 30 秒，避免启动时立即执行导致界面卡顿）
@@ -237,6 +242,8 @@ public partial class MainWindow : Window
         AppLogger.Info("正在从 Dashboard 刷新今日统计...");
         EdgeDriver? _driver = null;
 
+        // ! 串行化：等待其他浏览器操作（如主流程）释放后再读取
+        await BrowserLock.WaitAsync();
         try
         {
             _driver = EdgeDriverFactory.CreateDriver(false);
@@ -288,6 +295,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            BrowserLock.Release();
             EdgeDriverFactory.QuitActiveDriver();
         }
     }
@@ -360,6 +368,17 @@ public partial class MainWindow : Window
 
     private async Task AutoSearchFunction()
     {
+        // ! 防重入：上一轮未完成时跳过本次触发，避免并发创建浏览器导致会话冲突
+        if (IsExecuting)
+        {
+            AppLogger.Warning("上一轮执行尚未完成，跳过本次定时触发");
+            return;
+        }
+        IsExecuting = true;
+
+        // ! 串行化：等待启动刷新释放后开始，避免并发浏览器会话
+        await BrowserLock.WaitAsync();
+
         AppLogger.Info("========================================");
         AppLogger.Info("⏰ 定时器触发，开始自动执行流程");
         AppLogger.Info($"当前时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
@@ -416,6 +435,11 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppLogger.Error("自动执行流程异常", ex);
+        }
+        finally
+        {
+            IsExecuting = false;
+            BrowserLock.Release();
         }
     }
 

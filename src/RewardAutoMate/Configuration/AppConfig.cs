@@ -135,9 +135,9 @@ public static class AppConfig
     public static string SmtpServer { get; set; } = "smtp.qq.com";
 
     /// <summary>
-    /// SMTP 端口（QQ/163 邮箱 SSL 端口为 465）
+    /// SMTP 端口（QQ/163 邮箱 STARTTLS 端口为 587；.NET SmtpClient 对 465 隐式 SSL 兼容性差）
     /// </summary>
-    public static int SmtpPort { get; set; } = 465;
+    public static int SmtpPort { get; set; } = 587;
 
     /// <summary>
     /// 发件人邮箱（QQ 邮箱）
