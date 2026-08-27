@@ -35,6 +35,29 @@ public class RewardsDashboardService
         WaitForPageLoad();
         string _title = Driver.Title;
         AppLogger.Info($"Dashboard 页面已加载，标题: {_title}");
+        CheckLoginStatus();
+    }
+
+    /// <summary>
+    /// 检查当前页面是否被重定向到登录页（未登录），若是则记录警告
+    /// </summary>
+    private void CheckLoginStatus()
+    {
+        try
+        {
+            string _url = Driver.Url;
+            if (_url.Contains("login.live.com")
+                || _url.Contains("login.microsoftonline")
+                || _url.Contains("signin")
+                || _url.Contains("login"))
+            {
+                AppLogger.Warning("检测到已跳转到登录页，当前 EdgeUserData 可能未登录。请先以 Headless=false 运行一次完成账户登录后再开启无头运行。");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warning($"检查登录状态失败: {ex.Message}");
+        }
     }
 
     /// <summary>

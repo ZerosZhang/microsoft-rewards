@@ -242,8 +242,12 @@ public partial class MainWindow : Window
         AppLogger.Info("正在从 Dashboard 刷新今日统计...");
         EdgeDriver? _driver = null;
 
-        // ! 串行化：等待其他浏览器操作（如主流程）释放后再读取
-        await BrowserLock.WaitAsync();
+        // ! 串行化：等待浏览器锁（最多 30 秒），拿不到说明有其他操作占用，放弃本次刷新
+        if (!await BrowserLock.WaitAsync(TimeSpan.FromSeconds(30)))
+        {
+            AppLogger.Warning("等待浏览器操作完成超时，跳过本次统计刷新");
+            return;
+        }
         try
         {
             _driver = EdgeDriverFactory.CreateDriver(false);
@@ -376,70 +380,80 @@ public partial class MainWindow : Window
         }
         IsExecuting = true;
 
-        // ! 串行化：等待启动刷新释放后开始，避免并发浏览器会话
-        await BrowserLock.WaitAsync();
-
-        AppLogger.Info("========================================");
-        AppLogger.Info("⏰ 定时器触发，开始自动执行流程");
-        AppLogger.Info($"当前时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        AppLogger.Info("========================================");
-
         try
         {
-            // ! 实时进度回调
-            var _pc_progress = new Progress<(int done, int total)>(_tuple =>
+            // ! 串行化：等待启动刷新释放浏览器锁，最多 5 分钟；超时则跳过本轮，避免永久死锁
+            if (!await BrowserLock.WaitAsync(TimeSpan.FromMinutes(5)))
             {
-                Dispatcher.Invoke(() =>
-                {
-                    TodayStats.PcSearchesDone = _tuple.done;
-                    TodayStats.PcSearchesTarget = _tuple.total;
-                    UpdateStatsDisplay();
-                });
-            });
-            var _mobile_progress = new Progress<(int done, int total)>(_tuple =>
+                AppLogger.Warning("等待浏览器操作完成超时，跳过本次定时触发");
+                return;
+            }
+
+            try
             {
-                Dispatcher.Invoke(() =>
+                AppLogger.Info("========================================");
+                AppLogger.Info("⏰ 定时器触发，开始自动执行流程");
+                AppLogger.Info($"当前时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                AppLogger.Info("========================================");
+
+                // ! 实时进度回调
+                var _pc_progress = new Progress<(int done, int total)>(_tuple =>
                 {
-                    TodayStats.MobileSearchesDone = _tuple.done;
-                    TodayStats.MobileSearchesTarget = _tuple.total;
-                    UpdateStatsDisplay();
+                    Dispatcher.Invoke(() =>
+                    {
+                        TodayStats.PcSearchesDone = _tuple.done;
+                        TodayStats.PcSearchesTarget = _tuple.total;
+                        UpdateStatsDisplay();
+                    });
                 });
-            });
+                var _mobile_progress = new Progress<(int done, int total)>(_tuple =>
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        TodayStats.MobileSearchesDone = _tuple.done;
+                        TodayStats.MobileSearchesTarget = _tuple.total;
+                        UpdateStatsDisplay();
+                    });
+                });
 
-            ExecuteResult _result = await WindowsPCServer.ExecuteFullRewardsFlow(_pc_progress, _mobile_progress);
+                ExecuteResult _result = await WindowsPCServer.ExecuteFullRewardsFlow(_pc_progress, _mobile_progress);
 
-            // - 更新统计（最终值，防止进度回调和最终结果不一致）
-            TodayStats.PcSearchesDone = _result.PcSearches;
-            TodayStats.MobileSearchesDone = _result.MobileSearches;
-            TodayStats.BenefitsClaimed += _result.BenefitsClaimed;
-            TodayStats.PunchCardsDone += _result.PunchCardsCompleted;
-            TodayStats.DailyTasksDone += _result.DailyTasksCompleted;
-            TodayStats.LastUpdateTime = DateTime.Now;
-            Dispatcher.Invoke(UpdateStatsDisplay);
+                // - 更新统计（最终值，防止进度回调和最终结果不一致）
+                TodayStats.PcSearchesDone = _result.PcSearches;
+                TodayStats.MobileSearchesDone = _result.MobileSearches;
+                TodayStats.BenefitsClaimed += _result.BenefitsClaimed;
+                TodayStats.PunchCardsDone += _result.PunchCardsCompleted;
+                TodayStats.DailyTasksDone += _result.DailyTasksCompleted;
+                TodayStats.LastUpdateTime = DateTime.Now;
+                Dispatcher.Invoke(UpdateStatsDisplay);
 
-            // - 更新热力图数据
-            QueueItem _item = QueueService.GetTodayCount();
-            _item.Count += (uint)_result.TotalSearches;
-            QueueService.UpdateItem(_item);
-            HeatmapData = QueueService.DequeueTop365();
-            Dispatcher.Invoke(UpdateHeatmap);
+                // - 更新热力图数据
+                QueueItem _item = QueueService.GetTodayCount();
+                _item.Count += (uint)_result.TotalSearches;
+                QueueService.UpdateItem(_item);
+                HeatmapData = QueueService.DequeueTop365();
+                Dispatcher.Invoke(UpdateHeatmap);
 
-            // - 执行完成后再次刷新 Dashboard 状态
-            await Task.Run(async () => await RefreshDashboardStatsAsync());
+                NextExecuteTime = DateTime.Now.AddHours(Configuration.AppConfig.ExecuteIntervalHours);
+                AppLogger.Info("热力图已更新");
+                AppLogger.Info($"下次执行时间: {NextExecuteTime:yyyy-MM-dd HH:mm:ss}");
+                Dispatcher.Invoke(UpdateNextRunDisplay);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error("自动执行流程异常", ex);
+            }
+            finally
+            {
+                BrowserLock.Release();
+            }
 
-            NextExecuteTime = DateTime.Now.AddHours(Configuration.AppConfig.ExecuteIntervalHours);
-            AppLogger.Info("热力图已更新");
-            AppLogger.Info($"下次执行时间: {NextExecuteTime:yyyy-MM-dd HH:mm:ss}");
-            Dispatcher.Invoke(UpdateNextRunDisplay);
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Error("自动执行流程异常", ex);
+            // ! 主流程锁已释放，再刷新 Dashboard 统计（刷新内部自行取锁，避免嵌套锁死）
+            await RefreshDashboardStatsAsync();
         }
         finally
         {
             IsExecuting = false;
-            BrowserLock.Release();
         }
     }
 
