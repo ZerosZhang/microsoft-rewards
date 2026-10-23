@@ -30,7 +30,7 @@ public static class WebDriverUpdater
                 return CachedDriverPath;
             }
 
-            string _driver_path = Path.Combine(AppContext.BaseDirectory, "msedgedriver.exe");
+            string _driver_path = ResolveDriverPath();
 
             if (AppConfig.AutoUpdateWebDriver)
             {
@@ -75,6 +75,28 @@ public static class WebDriverUpdater
             CachedDriverPath = _driver_path;
             return _driver_path;
         }
+    }
+
+    /// <summary>
+    /// 定位驱动文件：优先运行目录根下的 msedgedriver.exe，
+    /// 其次发布产物自带的 External\msedgedriver.exe（dotnet publish 只会把它放在 External 子目录）
+    /// </summary>
+    private static string ResolveDriverPath()
+    {
+        string _root_path = Path.Combine(AppContext.BaseDirectory, "msedgedriver.exe");
+        if (File.Exists(_root_path))
+        {
+            return _root_path;
+        }
+
+        string _external_path = Path.Combine(AppContext.BaseDirectory, "External", "msedgedriver.exe");
+        if (File.Exists(_external_path))
+        {
+            AppLogger.Info($"运行目录没有驱动，改用发布产物自带的: {_external_path}");
+            return _external_path;
+        }
+
+        return _root_path;
     }
 
     /// <summary>

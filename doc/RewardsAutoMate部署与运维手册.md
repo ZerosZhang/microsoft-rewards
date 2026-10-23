@@ -33,6 +33,9 @@ dotnet publish -c Release -o src/RewardAutoMate/bin/Publish
 
 发布产物包含：`RewardAutoMate.exe`、运行依赖 dll、`External/msedgedriver.exe`、`External/email_config.json`。
 
+> 驱动在 `External\` 下，程序会自动回退到这里（`WebDriverUpdater.ResolveDriverPath`），首次运行不需要联网下载；
+> 只有当驱动版本与本机 Edge 不一致时才联网更新。
+
 > 若目标机无 .NET 运行时，可改用自包含：`dotnet publish -c Release -r win-x64 --self-contained true -o ...`
 
 ### 1.3 首次登录（重要）
