@@ -13,7 +13,9 @@
 5. [数据库说明](#五数据库说明)
 6. [日志说明](#六日志说明)
 7. [定时与调度](#七定时与调度)
-8. [常见问题排查](#八常见问题排查)
+8. [进程清理](#八进程清理)
+9. [边缘场景排查](#九边缘场景排查)
+10. [常见问题排查](#十常见问题排查)
 
 ---
 
@@ -168,7 +170,141 @@ GROUP BY d ORDER BY d;
 
 ---
 
-## 八、常见问题排查
+## 八、进程清理
+
+浏览器由 `msedgedriver` 拉起，**子进程不会随父进程一起退出**。程序被强杀、崩溃、或驱动 `Quit()` 失败时，`msedge.exe` 会变成孤儿进程继续占用 `EdgeUserData`，下一次启动就会得到 `session not created: ... crashed` 或 `DevToolsActivePort file doesn't exist`。清理机制就是为这条链路兜底。
+
+### 8.1 清理时机
+
+| 时机 | 触发点 | 行为 |
+|------|--------|------|
+| 程序启动（首次创建驱动前） | `EdgeDriverFactory.EnsureStartupCleanup` | 结束上次运行残留的浏览器/驱动进程，删除锁文件 |
+| 托盘右键「退出」 | `MainWindow` 退出项 | 停定时器 → `ShutdownAll` → `Quit()` 后兜底清理 |
+| 正常退出 | `App.OnExit` | 同上（与托盘退出重复调用是幂等的） |
+| 系统注销/关机 | `App.OnSessionEnding` | 同上 |
+| 进程退出兜底 | `AppDomain.ProcessExit` | 同上（走不到 OnExit 的场景） |
+| 驱动升级前 | `WebDriverUpdater.DownloadDriver` | 结束全部 `msedgedriver` 再覆盖驱动文件 |
+| 浏览器启动崩溃 | `EdgeDriverFactory.CreateDriver` | 清进程 + 删锁文件后重试（见第九章） |
+
+`ShutdownAll` 的 `Quit()` 只等 10 秒，超时直接转进程清理，避免关程序时卡死。
+
+### 8.2 清理范围（不会误杀用户浏览器）
+
+| 对象 | 匹配方式 | 说明 |
+|------|---------|------|
+| `msedge.exe` | 命令行含本项目 `--user-data-dir`（WMI `Win32_Process.CommandLine`） | 只杀本程序的自动化实例；用户自己开的 Edge 命令行里没有这个路径，不受影响 |
+| `msedgedriver.exe` | 按进程名全杀 | 除 Selenium 自动化外基本没有程序常驻它 |
+| 锁文件 | `SingletonLock` / `SingletonSocket` / `SingletonCookie` / `DevToolsActivePort` / `lockfile` | 仅在 `EdgeUserData` 目录内删除 |
+
+WMI 读不到命令行时**放弃浏览器清理**（只清驱动），宁可不杀也不误杀。切到 `EdgeUserData.fallback` 之后的重试，清理目标同步改为 fallback 目录。
+
+### 8.3 单实例保护
+
+程序持有互斥量 `Local\RewardAutoMate_SingleInstance`。重复启动只弹提示后退出，不会出现两个进程抢同一个 `EdgeUserData`、互相清理对方浏览器的局面。
+
+> 程序崩溃后互斥量会被系统释放，不会影响下次启动；但**托盘里还在运行的实例**会阻止新实例启动，需先右键「退出」。
+
+### 8.4 手动确认与手动清理
+
+确认是否还有残留（PowerShell）：
+
+```powershell
+# 本项目 profile 下的浏览器进程
+Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" |
+  Where-Object { $_.CommandLine -match 'EdgeUserData' } |
+  Select-Object ProcessId, @{n='headless';e={$_.CommandLine -match '--headless'}}
+
+# 驱动进程
+Get-Process msedgedriver -ErrorAction SilentlyContinue
+```
+
+手动清理（程序已退出时执行）：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" |
+  Where-Object { $_.CommandLine -match 'EdgeUserData' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Get-Process msedgedriver -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+清理日志关键字：`[进程清理]`、`[进程清理/启动检查]`、`已结束残留浏览器进程`、`已删除残留锁文件`。
+
+---
+
+## 九、边缘场景排查
+
+### 9.1 浏览器启动即退
+
+日志表现：
+
+```
+EdgeDriver 创建失败（第 1/3 次） ... session not created: Microsoft Edge failed to start: crashed.
+(session not created: DevToolsActivePort file doesn't exist)
+```
+
+说明 `msedgedriver` 起来了，但 `msedge` 进程启动后立刻退出。代码会自动走三级降级：
+
+| 次数 | 变化 | 目的 |
+|------|------|------|
+| 1 | 原参数 | 正常路径 |
+| 2 | 清理进程/锁文件 + `--disable-gpu` `--disable-software-rasterizer`，去掉 `--start-maximized` | 排查 GPU/远程桌面环境导致的崩溃 |
+| 3 | 改用 `EdgeUserData.fallback` | 跳过原 profile 的损坏状态 |
+
+日志出现 `改用备用用户目录` 且随后成功，说明主 profile 已不可用：此时**登录态在那个新目录里是空的**，需要按 1.3 重新登录一次；确认无误后可把 `EdgeUserData.fallback` 改名为 `EdgeUserData` 复用。
+
+按可能性排查：
+
+| 现象 | 常见原因 | 处理 |
+|------|---------|------|
+| 三级都失败 | `EdgeUserData` 目录不可写（部署在 `Program Files`、只读盘、网络盘） | 程序会打印"用户数据目录不可写"，把程序挪到可写目录 |
+| 三级都失败 | 杀软/EDR 拦截 `msedge.exe` 子进程 | 加白名单 |
+| 偶发失败后自愈 | 上次运行残留进程占着 profile | 正常，启动清理已覆盖；频繁出现说明退出方式不规范（强杀/关机） |
+| 只在计划任务里失败 | 任务计划勾了"不管用户是否登录"→ Session 0 无桌面 | 改为"只在用户登录时运行"，或用 RDP 会话保持 |
+| 启动即退且磁盘告警 | `TEMP` 或系统盘满 | 清理磁盘；Edge 启动要写 `Crashpad` 与临时文件 |
+
+### 9.2 驱动服务未初始化就退出
+
+日志表现：
+
+```
+Driver service process exited unexpectedly before initialization completed. Service URL: http://localhost:xxxxx/
+EdgeDriver 创建失败
+```
+
+这是 **驱动进程本身**退出（还没到浏览器），与 9.1 不同。已确认的坑：
+
+- **不要设置 `EdgeDriverService.LogPath`**。实测 Selenium 4.44 + msedgedriver 155 下，设置任意 `LogPath`（含纯 ASCII 路径）都会让驱动立即退出。代码里只开 `EnableVerboseLogging`（即 `--verbose`），`AppConfig.EnableDriverVerboseLog` 控制。
+- 升级 Selenium 后可复测：临时加回 `_service.LogPath = Path.Combine(AppContext.BaseDirectory, "Logs");`，若驱动又能正常起来，说明上游已修，可以把日志目录正式启用。
+- 其余原因：驱动 exe 被杀软隔离、驱动被替换后仍在移动中（程序已对覆盖加重试）、端口被占（驱动自选端口，概率低）。
+
+### 9.3 驱动覆盖失败 / 下载失败
+
+| 日志关键字 | 含义 | 处理 |
+|-----------|------|------|
+| `覆盖驱动失败（第 n/3 次，可能被进程占用）` | 有 `msedgedriver` 正在运行 | 程序会先清进程再重试；仍失败就手动按 8.4 清理 |
+| `下载驱动失败（已重试 3 次）` | 网络/代理/防火墙到 `msedgedriver.microsoft.com` 不通 | 手动下载对应版本放到 `msedgedriver.exe`（根目录或 `External\`） |
+| `本机缺少 msedgedriver，且自动下载失败` | 无驱动且下载失败，程序拒绝继续 | 按上一条手动放驱动；或用发布产物自带的 `External\msedgedriver.exe` |
+| `下载的驱动包无效` | 下载到的是 HTML 错误页/半截文件 | 检查代理；程序已自动清理临时文件，重跑即可 |
+
+发布产物里驱动在 `External\`，程序会自动回退使用，首次运行不需要联网。
+
+### 9.4 版本不一致警告
+
+日志 `继续使用本地驱动 xxx（与本机 Edge yyy 不一致，浏览器可能无法启动）`：驱动升级失败但本地有驱动，程序选择继续跑。Edge 主版本不一致时 Selenium 一定失败，看到这条请按 9.3 手动换驱动，别指望它能自动恢复。
+
+### 9.5 排查入口速查
+
+| 想确认的事 | 看哪里 |
+|-----------|--------|
+| 进程是否残留 | 8.4 的命令；日志 `[进程清理]` |
+| 浏览器为什么崩 | `Logs/yyyy-MM-dd.log` 里 `EdgeDriver 创建失败` 后的堆栈；`EdgeUserData\Crashpad\reports\*.dmp`；事件查看器 → 应用程序日志中的 `msedge.exe` 错误 |
+| 驱动为什么起不来 | `Driver service process exited unexpectedly` 前后的日志行 |
+| 驱动是否升级成功 | `检测到 Edge 版本: ... 本地驱动版本: ...`、`WebDriver 已同步到版本 ...` |
+| 调度是否被另一个实例占用 | 启动日志有无单实例提示；托盘是否有旧实例 |
+
+---
+
+## 十、常见问题排查
 
 ### Q1 报 `SessionNotCreated` / 驱动版本不匹配
 
