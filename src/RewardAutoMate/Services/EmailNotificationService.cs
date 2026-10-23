@@ -110,9 +110,9 @@ public static class EmailNotificationService
     }
 
     /// <summary>
-    /// 发送每周执行汇总邮件（近 7 天：按天概况 + 明细 + 异常）
+    /// 发送每周执行汇总邮件（周一触发，汇总上一个完整自然周：按天概况 + 明细 + 异常）
     /// </summary>
-    public static async Task SendWeeklySummaryAsync(List<ExecutionRecord> _recent_records)
+    public static async Task SendWeeklySummaryAsync()
     {
         if (!AppConfig.SendWeeklyReport)
         {
@@ -125,10 +125,11 @@ public static class EmailNotificationService
             return;
         }
 
-        DateTime _week_start = ExecutionHistoryService.GetWeekStart(DateTime.Today);
-        DateTime _week_end = _week_start.AddDays(7).AddSeconds(-1);
+        // ! 统计区间 = 上一个完整自然周（上周一 00:00 ~ 上周日 23:59:59）
+        DateTime _week_start = ExecutionHistoryService.GetWeekStart(DateTime.Today).AddDays(-7);
+        DateTime _week_end = ExecutionHistoryService.GetWeekStart(DateTime.Today).AddSeconds(-1);
         string _subject = $"[RewardAutoMate] 每周执行汇总  {_week_start:yyyy-MM-dd} ~ {_week_end:MM-dd}";
-        string _body = BuildWeeklySummaryEmailBody(_recent_records, _week_start, _week_end);
+        string _body = BuildWeeklySummaryEmailBody(_week_start, _week_end);
 
         await SendEmailAsync(_subject, _body);
     }
@@ -283,11 +284,10 @@ public static class EmailNotificationService
         return _sb.ToString();
     }
 
-    private static string BuildWeeklySummaryEmailBody(List<ExecutionRecord> _recent_records, DateTime _week_start, DateTime _week_end)
+    private static string BuildWeeklySummaryEmailBody(DateTime _week_start, DateTime _week_end)
     {
-        // 仅统计本周区间内的记录
-        List<ExecutionRecord> _records = _recent_records
-            .Where(it => it.StartTime >= _week_start && it.StartTime <= _week_end)
+        // 取上周区间内的执行记录（供周报汇总），EndTime 加 1 秒转为闭区间查询
+        List<ExecutionRecord> _records = ExecutionHistoryService.GetByRange(_week_start, _week_end.AddSeconds(1))
             .OrderBy(it => it.StartTime)
             .ToList();
 
@@ -295,7 +295,7 @@ public static class EmailNotificationService
         int _success = _records.Count(it => it.Success);
         int _fail = _total - _success;
 
-        // ! 真实积分对比：本周最后一次读取的积分 - 上周最后一次读取的积分
+        // ! 真实积分对比：上周最后一次读取的积分 - 上上周最后一次读取的积分
         int _last_week_points = ExecutionHistoryService.GetLastPointsBefore(_week_start);
         int _this_week_points = _records
             .Where(it => it.CurrentPoints > 0)
@@ -311,28 +311,28 @@ public static class EmailNotificationService
         _sb.AppendLine($"RewardAutoMate 每周执行汇总  {_week_start:yyyy-MM-dd} ~ {_week_end:MM-dd}");
         _sb.AppendLine("========================================");
         _sb.AppendLine();
-        _sb.AppendLine($"本周执行: {_total} 次（成功 {_success}，失败 {_fail}）");
+        _sb.AppendLine($"上周执行: {_total} 次（成功 {_success}，失败 {_fail}）");
         if (_has_real_points)
         {
-            _sb.AppendLine($"本周积分增长: +{_week_gain:N0}（当前总积分: {_this_week_points:N0}）");
-            _sb.AppendLine($"（依据: 上周结束 {_last_week_points:N0} -> 本周结束 {_this_week_points:N0}）");
+            _sb.AppendLine($"上周积分增长: +{_week_gain:N0}（当前总积分: {_this_week_points:N0}）");
+            _sb.AppendLine($"（依据: 上上周结束 {_last_week_points:N0} -> 上周结束 {_this_week_points:N0}）");
         }
         else
         {
-            _sb.AppendLine($"本周估计积分: +{_estimated_points:N0}（账户积分数据不足，为程序估算）");
+            _sb.AppendLine($"上周估计积分: +{_estimated_points:N0}（账户积分数据不足，为程序估算）");
         }
         _sb.AppendLine();
 
         // ! 按天概况（积分列为当日账户积分变化，数据不足时显示 -）
         _sb.AppendLine("----------------------------------------");
-        _sb.AppendLine("本周概况（按天）:");
+        _sb.AppendLine("上周概况（按天）:");
         _sb.AppendLine("----------------------------------------");
         var _grouped = _records
             .GroupBy(it => it.StartTime.Date)
             .OrderBy(it => it.Key);
         if (!_grouped.Any())
         {
-            _sb.AppendLine("（本周尚无执行记录）");
+            _sb.AppendLine("（上周尚无执行记录）");
         }
         else
         {
@@ -360,9 +360,9 @@ public static class EmailNotificationService
         }
         _sb.AppendLine();
 
-        // ! 本周明细
+        // ! 上周明细
         _sb.AppendLine("----------------------------------------");
-        _sb.AppendLine("本周执行明细:");
+        _sb.AppendLine("上周执行明细:");
         _sb.AppendLine("----------------------------------------");
         if (_records.Count == 0)
         {
@@ -389,7 +389,7 @@ public static class EmailNotificationService
 
         // ! 异常提醒
         _sb.AppendLine("----------------------------------------");
-        _sb.AppendLine("本周异常:");
+        _sb.AppendLine("上周异常:");
         _sb.AppendLine("----------------------------------------");
         List<ExecutionRecord> _failed = _records.Where(it => !it.Success).ToList();
         if (_failed.Count == 0)

@@ -163,8 +163,7 @@ public partial class MainWindow : Window
             }
 
             AppLogger.Info("正在生成并发送本周执行汇总邮件...");
-            var _recent = ExecutionHistoryService.GetRecent(7);
-            await EmailNotificationService.SendWeeklySummaryAsync(_recent);
+            await EmailNotificationService.SendWeeklySummaryAsync();
             ExecutionHistoryService.MarkWeeklyReportSent();
             AppLogger.Info("本周周报已发送");
         }
@@ -545,8 +544,7 @@ public partial class MainWindow : Window
         AppLogger.Info("🖱️ 用户手动触发发送本周执行汇总邮件");
         try
         {
-            var _recent = Services.ExecutionHistoryService.GetRecent(7);
-            await Services.EmailNotificationService.SendWeeklySummaryAsync(_recent);
+            await Services.EmailNotificationService.SendWeeklySummaryAsync();
             AppLogger.Info("周报邮件发送完成");
             System.Windows.MessageBox.Show("周报邮件已发送，请查收邮箱。", "发送成功",
                 System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
