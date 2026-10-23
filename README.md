@@ -88,9 +88,24 @@ dotnet run --project src/RewardAutoMate
 | `ExecuteIntervalHours` | 12 | 执行周期（小时） |
 | `Headless` | true | Edge 无头运行 |
 | `EnableDashboardTasks` | true | 是否执行 Dashboard 任务 |
+| `AutoUpdateWebDriver` | true | 按本机 Edge 版本自动同步 msedgedriver |
+| `EnableDriverVerboseLog` | true | 驱动以 `--verbose` 启动，便于排查浏览器启动失败 |
 | `NotifyOnFailure` | true | 异常邮件开关 |
 | `SendWeeklyReport` | true | 每周汇总邮件开关 |
 | `NotifyCooldownMinutes` | 30 | 相同异常邮件冷却时间 |
+
+## 🧹 进程清理
+
+浏览器与驱动进程会在这几个时机被清理，避免残留的 `msedge.exe` 占着 `EdgeUserData` 导致下次启动崩溃：
+
+| 时机 | 行为 |
+|------|------|
+| 程序启动 | 结束上一次运行残留的（命令行带本项目 `EdgeUserData` 的）`msedge.exe` 与全部 `msedgedriver.exe`，并删除 `SingletonLock` / `DevToolsActivePort` 等锁文件 |
+| 退出（托盘右键「退出」/ 注销关机/进程退出） | 先 `Quit()`（10 秒超时），再兜底结束残留进程 |
+| 驱动升级前 | 先结束 `msedgedriver.exe`，再覆盖驱动文件（带 3 次重试） |
+| 浏览器启动崩溃 | 清进程 + 删锁文件后重试，第 2 次关 GPU、第 3 次改用 `EdgeUserData.fallback` |
+
+清理只针对**本项目 profile 的**浏览器进程，不会关闭用户自己开的 Edge 窗口。程序带单实例互斥锁，重复启动会提示而不会起第二个进程。
 
 ## 📬 邮件通知
 

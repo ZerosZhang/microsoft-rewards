@@ -1,4 +1,4 @@
-﻿namespace RewardAutoMate.Configuration;
+namespace RewardAutoMate.Configuration;
 
 /// <summary>
 /// 应用全局配置，所有可调整参数集中于此
@@ -145,9 +145,9 @@ public static class AppConfig
     public static string SmtpFrom { get; set; } = "zeros_zhang@qq.com";
 
     /// <summary>
-    /// 收件人邮箱列表（逗号分隔，示例为 163 邮箱）
+    /// 收件人邮箱列表（逗号分隔；实际值由 External/email_config.json 覆盖）
     /// </summary>
-    public static string SmtpTo { get; set; } = "zeros_zhang@163.com";
+    public static string SmtpTo { get; set; } = "zeros_zhang@qq.com";
 
     /// <summary>
     /// SMTP 授权码/密码（QQ/163 需使用邮箱设置的"授权码"而非登录密码）
@@ -192,6 +192,11 @@ public static class AppConfig
     /// 是否自动同步 WebDriver 版本（与本机 Edge 匹配）
     /// </summary>
     public static bool AutoUpdateWebDriver { get; set; } = true;
+
+    /// <summary>
+    /// 是否输出 msedgedriver 详细日志到 Logs\msedgedriver.log（排查浏览器启动失败用）
+    /// </summary>
+    public static bool EnableDriverVerboseLog { get; set; } = true;
 
     #endregion
 

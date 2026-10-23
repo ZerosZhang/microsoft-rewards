@@ -1,4 +1,4 @@
-﻿using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
@@ -64,6 +64,17 @@ public partial class MainWindow : Window
         _item_exit.Click += (_, _) =>
         {
             AppLogger.Info("用户点击退出");
+            StopTimers();
+            // ! 先清浏览器再退：否则 Application.Shutdown 直接结束进程，msedge 会变成孤儿进程
+            try
+            {
+                EdgeDriverFactory.ShutdownAll("用户退出");
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warning($"退出清理异常: {ex.Message}");
+            }
+            NotifyIcon.Visible = false;
             AppLogger.CloseAndFlush();
             Application.Current.Shutdown();
         };
@@ -526,6 +537,23 @@ public partial class MainWindow : Window
     {
         e.Cancel = true;
         Hide();
+    }
+
+    /// <summary>
+    /// 退出前停掉定时器，避免正在跑的定时回调在关闭过程中又去创建浏览器
+    /// </summary>
+    private void StopTimers()
+    {
+        try
+        {
+            MainTimer?.Dispose();
+            WeeklyReportTimer?.Dispose();
+            AppLogger.Info("定时器已停止");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warning($"停止定时器异常: {ex.Message}");
+        }
     }
 
     private async void Button_Task_Click(object sender, RoutedEventArgs e)

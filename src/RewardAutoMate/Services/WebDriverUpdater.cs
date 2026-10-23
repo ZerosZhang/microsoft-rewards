@@ -48,7 +48,17 @@ public static class WebDriverUpdater
                         }
                         catch (Exception ex)
                         {
-                            AppLogger.Error("WebDriver 自动同步失败，将继续使用现有驱动", ex);
+                            AppLogger.Error("WebDriver 自动同步失败", ex);
+
+                            if (!File.Exists(_driver_path))
+                            {
+                                // ! 本地没有驱动时不能再"继续使用现有驱动"，否则后面只会得到更晦涩的报错
+                                throw new InvalidOperationException(
+                                    $"本机缺少 msedgedriver，且自动下载失败，无法启动浏览器。请手动把 {_edge_version} 版驱动放到 {_driver_path}。原因: {ex.Message}",
+                                    ex);
+                            }
+
+                            AppLogger.Warning($"继续使用本地驱动 {_current_version ?? "未知版本"}（与本机 Edge {_edge_version} 不一致，浏览器可能无法启动）");
                         }
                     }
                     else
@@ -159,26 +169,41 @@ public static class WebDriverUpdater
 
     /// <summary>
     /// 从微软官方源下载并解压匹配版本的 msedgedriver，替换目标文件
+    /// ! 先下到 .tmp 并校验是合法 zip，再覆盖；覆盖前清理残留驱动进程
     /// </summary>
     private static void DownloadDriver(string _edge_version, string _target_path)
     {
         string _download_url = $"https://msedgedriver.microsoft.com/{_edge_version}/edgedriver_win64.zip";
         string _temp_dir = Path.Combine(Path.GetTempPath(), "RewardAutoMate", $"edgedriver_{_edge_version}");
         string _zip_path = Path.Combine(_temp_dir, "edgedriver_win64.zip");
+        string _zip_tmp = _zip_path + ".tmp";
         string _extract_dir = Path.Combine(_temp_dir, "extract");
 
         Directory.CreateDirectory(_temp_dir);
 
         AppLogger.Info($"正在下载 WebDriver: {_download_url}");
-        using (FileStream _fs = new FileStream(_zip_path, FileMode.Create, FileAccess.Write))
+        DownloadWithRetry(_download_url, _zip_tmp, 3);
+
+        // ! 校验压缩包完整（下载中断/被代理劫持时这里能提前发现）
+        try
         {
-            using Stream _stream = HttpClient.GetStreamAsync(_download_url).GetAwaiter().GetResult();
-            _stream.CopyTo(_fs);
+            using ZipArchive _archive = ZipFile.OpenRead(_zip_tmp);
+            if (_archive.Entries.All(_entry => _entry.FullName != "msedgedriver.exe"))
+            {
+                throw new InvalidDataException("压缩包内没有 msedgedriver.exe");
+            }
         }
+        catch (Exception ex)
+        {
+            TryDelete(_zip_tmp);
+            throw new InvalidDataException($"下载的驱动包无效: {ex.Message}", ex);
+        }
+
+        File.Move(_zip_tmp, _zip_path, true);
 
         if (Directory.Exists(_extract_dir))
         {
-            Directory.Delete(_extract_dir, true);
+            TryDeleteDirectory(_extract_dir);
         }
         ZipFile.ExtractToDirectory(_zip_path, _extract_dir);
 
@@ -188,7 +213,10 @@ public static class WebDriverUpdater
             throw new FileNotFoundException("解压后未找到 msedgedriver.exe", _extracted);
         }
 
-        File.Copy(_extracted, _target_path, true);
+        // ! 覆盖前先结束残留 msedgedriver 进程，否则文件被占用会导致 Copy 失败
+        ProcessCleanupService.Cleanup(null, "驱动升级");
+
+        CopyWithRetry(_extracted, _target_path, 3);
         AppLogger.Info($"msedgedriver 已更新到: {_target_path}");
 
         // 尝试同步回源码 External 目录（避免重新编译后版本回退），失败忽略
@@ -198,13 +226,85 @@ public static class WebDriverUpdater
                 AppContext.BaseDirectory, "..", "..", "..", "External", "msedgedriver.exe"));
             if (Path.GetFullPath(_source_path) != Path.GetFullPath(_target_path))
             {
-                File.Copy(_extracted, _source_path, true);
+                CopyWithRetry(_extracted, _source_path, 2);
                 AppLogger.Info($"已同步驱动到源码目录: {_source_path}");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warning($"同步驱动到源码目录失败（非开发环境可忽略）: {ex.Message}");
+        }
+    }
+
+    private static void DownloadWithRetry(string _url, string _target, int _max_attempts)
+    {
+        for (int _attempt = 1; _attempt <= _max_attempts; _attempt++)
+        {
+            try
+            {
+                using FileStream _fs = new FileStream(_target, FileMode.Create, FileAccess.Write, FileShare.None);
+                using Stream _stream = HttpClient.GetStreamAsync(_url).GetAwaiter().GetResult();
+                _stream.CopyTo(_fs);
+                AppLogger.Info($"驱动下载完成: {_fs.Length / 1024 / 1024.0:F1} MB（第 {_attempt} 次尝试）");
+                return;
+            }
+            catch (Exception ex)
+            {
+                TryDelete(_target);
+                if (_attempt == _max_attempts)
+                {
+                    throw new IOException($"下载驱动失败（已重试 {_max_attempts} 次）: {ex.Message}", ex);
+                }
+                AppLogger.Warning($"驱动下载失败（第 {_attempt}/{_max_attempts} 次）: {ex.Message}，3 秒后重试");
+                Thread.Sleep(TimeSpan.FromSeconds(3));
+            }
+        }
+    }
+
+    private static void CopyWithRetry(string _source, string _target, int _max_attempts)
+    {
+        for (int _attempt = 1; _attempt <= _max_attempts; _attempt++)
+        {
+            try
+            {
+                File.Copy(_source, _target, true);
+                return;
+            }
+            catch (Exception ex) when (_attempt < _max_attempts)
+            {
+                AppLogger.Warning($"覆盖驱动失败（第 {_attempt}/{_max_attempts} 次，可能被进程占用）: {ex.Message}，2 秒后重试");
+                ProcessCleanupService.Cleanup(null, "驱动覆盖重试");
+            }
+        }
+
+        // 最后一次不再吞异常，交给上层记录
+        File.Copy(_source, _target, true);
+    }
+
+    private static void TryDelete(string _path)
+    {
+        try
+        {
+            if (File.Exists(_path))
+            {
+                File.Delete(_path);
             }
         }
         catch
         {
-            // 非开发环境忽略
+            // 清理失败忽略
+        }
+    }
+
+    private static void TryDeleteDirectory(string _path)
+    {
+        try
+        {
+            Directory.Delete(_path, true);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warning($"清理临时解压目录失败: {ex.Message}");
         }
     }
 }
