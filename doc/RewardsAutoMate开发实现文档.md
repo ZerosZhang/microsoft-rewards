@@ -253,11 +253,13 @@ EnsureDriverUpToDate()
 | `GetDashboardStatus` | 读积分/等级 | `header p` 解析大数字；`//*[contains(text(),'会员')]` |
 | `GetTodayProgress` | 读今日进度 | 遍历 `button` 解析 `x/x`；可领取；DailySet 完成统计 |
 | `ClaimBenefits` | 领福利 | 扫描 `button,a` 中"领取/claim/获取"，逐个点击 |
-| `ExecuteDailySet` | Daily Set | 卡片选择器 + 跳过已完成 + 点击 + 返回 |
+| `ExecuteDailySet` | Daily Set | 卡片链接 → 新标签页打开 → 停留 8-15s → 关标签页 → 回 dashboard 复查「已完成」，未完成补做第 2 轮；积分按复查结果结算 |
 | `ExecutePunchCards` | Punch Cards | Earn 页扫描 + 子任务完成 |
 | `ExecuteDailyTasks` | 日常任务 | `offerId` 链接 + 页面随机选选项 |
 
-**选择器策略**：优先专属选择器（`[data-bi-name*='DailySet']`），失败回退通用选择器，再失败按卡片类名。
+**选择器策略**：优先 `#dailyset a[href]`（2026-11-17 实测首页结构：`<section id="dailyset">` 内 3 个 `target="_blank"` 链接，页面已无 `data-bi-name` 属性），失败回退 `[data-bi-name*='DailySet']`、通用卡片类名。
+
+**Daily Set 完成数**：直接读「每日活动」进度按钮的 `活动: x/3`；页面徽章文本是 `10` 而非 `+10`，依赖 `+10` 的旧判断一律失效。
 
 > ⚠️ 微软随时可能改版，选择器集中在 `RewardsDashboardService` 便于统一更新。
 
