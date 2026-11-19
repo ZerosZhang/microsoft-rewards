@@ -253,7 +253,7 @@ EnsureDriverUpToDate()
 | `GetDashboardStatus` | 读积分/等级 | `header p` 解析大数字；`//*[contains(text(),'会员')]` |
 | `GetTodayProgress` | 读今日进度 | 遍历 `button` 解析 `x/x`；可领取；DailySet 完成统计 |
 | `ClaimBenefits` | 领福利 | 扫描 `button,a` 中"领取/claim/获取"，逐个点击 |
-| `ExecuteDailySet` | Daily Set | 卡片链接 → 新标签页打开 → 停留 8-15s → 关标签页 → 回 dashboard 复查「已完成」，未完成补做第 2 轮；积分按复查结果结算 |
+| `ExecuteDailySet` | Daily Set | 卡片 Ctrl+点击开新标签页 → 停留 25-40s → 关标签页 → 回 dashboard 复查「已完成」，未完成补做第 2 轮；积分按复查结果结算 |
 | `ExecutePunchCards` | Punch Cards | Earn 页扫描 + 子任务完成 |
 | `ExecuteDailyTasks` | 日常任务 | `offerId` 链接 + 页面随机选选项 |
 

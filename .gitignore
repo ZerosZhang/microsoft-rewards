@@ -370,3 +370,6 @@ email_config.json
 bin/
 obj/
 msedgedriver.exe
+
+# 临时工作目录（探针、发布包等）
+.temp/

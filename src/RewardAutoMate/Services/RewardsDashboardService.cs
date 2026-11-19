@@ -378,18 +378,17 @@ public class RewardsDashboardService
                     try
                     {
                         AppLogger.Info($"[DailySet] ({_index}/{_tasks.Count}) 开始执行: {_name}");
-                        AppLogger.Info($"[DailySet] ({_index}/{_tasks.Count}) 目标链接: {(_url.Length > 0 ? _url : "(无 href，改用 Ctrl+点击)")}");
+                        AppLogger.Info($"[DailySet] ({_index}/{_tasks.Count}) 目标链接: {(_url.Length > 0 ? _url : "(无 href)")}");
 
-                        if (_url.Length > 0)
+                        // ! 实测：真实 Ctrl+点击（带 referrer）才能结算，直接 GoToUrl 不行
+                        if (!CtrlClickInNewTab(_card) && _url.Length > 0)
                         {
+                            AppLogger.Info($"[DailySet] ({_index}/{_tasks.Count}) Ctrl+点击没有开出新标签页，退回直接导航");
                             OpenTaskInNewTab(_url);
                         }
-                        else
-                        {
-                            CtrlClickInNewTab(_card);
-                        }
 
-                        int _dwell = Random.Shared.Next(8000, 15000);
+                        // ! 停留太短不结算，实测 35 秒可以，取 25-40 秒随机
+                        int _dwell = Random.Shared.Next(25000, 40000);
                         AppLogger.Info($"[DailySet] ({_index}/{_tasks.Count}) 停留 {_dwell / 1000.0:0.0}s 等待结算，当前标签页数: {Driver.WindowHandles.Count}");
                         await Task.Delay(_dwell);
                         AppLogger.Info($"[DailySet] ({_index}/{_tasks.Count}) 停留结束，开始关闭任务标签页");
@@ -667,24 +666,58 @@ public class RewardsDashboardService
     }
 
     /// <summary>
-    /// 卡片没有 href 时，用 Ctrl+点击在新标签页打开（等价于人工操作）
+    /// 用 Ctrl+点击在卡片上打开新标签页（等价于人工操作，保留 referrer）
     /// </summary>
-    private void CtrlClickInNewTab(IWebElement _card)
+    /// <returns>是否真的开出了新标签页</returns>
+    private bool CtrlClickInNewTab(IWebElement _card)
     {
-        int _before = Driver.WindowHandles.Count;
-        new Actions(Driver)
-            .KeyDown(OpenQA.Selenium.Keys.Control)
-            .Click(_card)
-            .KeyUp(OpenQA.Selenium.Keys.Control)
-            .Perform();
-        WaitForPageLoad();
-        AppLogger.Info($"[DailySet]   卡片无链接，已 Ctrl+点击（标签页数 {_before} -> {Driver.WindowHandles.Count}）");
-
-        if (Driver.WindowHandles.Count == _before)
+        int _before = 0;
+        try
         {
-            // ! 没开新标签页说明点击没被接住（或被前端拦截），记下来便于排查
-            AppLogger.Warning($"[DailySet]   Ctrl+点击后没有新标签页，当前页面: {Driver.Url}");
+            _before = Driver.WindowHandles.Count;
+            new Actions(Driver)
+                .KeyDown(OpenQA.Selenium.Keys.Control)
+                .Click(_card)
+                .KeyUp(OpenQA.Selenium.Keys.Control)
+                .Perform();
         }
+        catch (Exception ex)
+        {
+            AppLogger.Warning($"[DailySet]   Ctrl+点击失败: {ex.Message}");
+            return false;
+        }
+
+        // ? 新标签页不是瞬间出现的，最多等 10 秒
+        DateTime _deadline = DateTime.Now.AddSeconds(10);
+        while (DateTime.Now < _deadline)
+        {
+            try
+            {
+                if (Driver.WindowHandles.Count > _before) break;
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warning($"[DailySet]   读取标签页失败: {ex.Message}");
+                return false;
+            }
+            Thread.Sleep(500);
+        }
+
+        int _after = Driver.WindowHandles.Count;
+        AppLogger.Info($"[DailySet]   已 Ctrl+点击（标签页数 {_before} -> {_after}）");
+
+        if (_after <= _before)
+        {
+            AppLogger.Warning($"[DailySet]   Ctrl+点击后没有新标签页，当前页面: {Driver.Url}");
+            return false;
+        }
+
+        // 切到新标签页，等它加载完
+        string _latest = Driver.WindowHandles[^1];
+        Driver.SwitchTo().Window(_latest);
+        WaitForPageLoad();
+        AppLogger.Info($"[DailySet]   任务页: {Driver.Url} / {Driver.Title}");
+        return true;
     }
 
     /// <summary>
